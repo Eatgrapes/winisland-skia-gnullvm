@@ -1,5 +1,4 @@
 import argparse
-import hashlib
 from pathlib import Path
 import shutil
 import tarfile
@@ -18,7 +17,7 @@ with urllib.request.urlopen(url) as response:
     with tarfile.open(fileobj=response, mode="r|xz") as archive:
         for entry in archive:
             name = Path(entry.name).name.lower()
-            if not entry.name.lower().endswith("/bin/") and not name.endswith(".dll"):
+            if not entry.isfile() or not name.endswith(".dll"):
                 continue
             if not (name.startswith("libclang") or name.startswith("libllvm") or name == "llvm-c.dll"):
                 continue
