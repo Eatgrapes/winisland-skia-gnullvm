@@ -38,11 +38,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Rust installation failed' }
           rustup default 1.98.1-x86_64-pc-windows-gnullvm
           $archive = Join-Path $env:RUNNER_TEMP 'llvm-mingw.zip'
-          curl.exe -fL --retry 3 'https://github.com/mstorsjo/llvm-mingw/releases/download/20260922/llvm-mingw-20260922-ucrt-x86_64.zip' -o $archive
+          curl.exe -fL --retry 3 'https://github.com/mstorsjo/llvm-mingw/releases/download/20260616/llvm-mingw-20260616-ucrt-x86_64.zip' -o $archive
           if ($LASTEXITCODE -ne 0) { throw 'LLVM MinGW download failed' }
           $destination = Join-Path $env:RUNNER_TEMP 'llvm-mingw'
           Expand-Archive -LiteralPath $archive -DestinationPath $destination
-          $root = Join-Path $destination 'llvm-mingw-20260922-ucrt-x86_64'
+          $root = Join-Path $destination 'llvm-mingw-20260616-ucrt-x86_64'
           if (-not (Test-Path -LiteralPath "$root\bin\clang.exe")) { throw 'LLVM MinGW was not extracted' }
           "$root\bin" >> $env:GITHUB_PATH
           "LLVM_MINGW_ROOT=$root" >> $env:GITHUB_ENV
@@ -120,7 +120,8 @@ jobs:
           $env:SKIA_SOURCE_DIR = $env:SKIA_SOURCE
           $env:SKIA_GN_COMMAND = "$env:SKIA_SOURCE/bin/gn.exe"
           $env:SKIA_GN_ARGS = "is_mingw=true ar=`"$root/bin/llvm-ar.exe`""
-          $env:BINDGEN_EXTRA_CLANG_ARGS = "-fms-extensions -I$root/include/c++/v1 -I$root/lib/clang/23/include -I$root/include"
+          $clangVersion = (Get-ChildItem -LiteralPath "$root/lib/clang" -Directory | Sort-Object Name -Descending | Select-Object -First 1).Name
+          $env:BINDGEN_EXTRA_CLANG_ARGS = "-fms-extensions -I$root/include/c++/v1 -I$root/lib/clang/$clangVersion/include -I$root/include"
           cargo check --manifest-path "$env:BUILDER/Cargo.toml" -j 4
           if ($LASTEXITCODE -ne 0) { throw 'GNU LLVM Skia binding build failed' }
 
