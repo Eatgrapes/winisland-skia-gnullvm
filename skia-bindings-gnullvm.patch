@@ -1,0 +1,12 @@
+--- a/build_support/platform/windows.rs
++++ b/build_support/platform/windows.rs
+@@ -78,5 +78,8 @@ impl PlatformDetails for Generic {
+     }
+ 
+-    fn gn_args(&self, _config: &BuildConfiguration, builder: &mut GnArgsBuilder) {
++    fn gn_args(&self, config: &BuildConfiguration, builder: &mut GnArgsBuilder) {
+         builder.target_os_and_default_cpu("win");
++        if config.target.abi.as_deref() == Some("gnullvm") {
++            builder.target(Some("x86_64-w64-windows-gnu".to_string()));
++        }
+     }

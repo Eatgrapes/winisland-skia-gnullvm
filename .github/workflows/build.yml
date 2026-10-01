@@ -77,6 +77,8 @@ jobs:
           $bindings = $metadata.packages | Where-Object { $_.name -eq 'skia-bindings' }
           if ($bindings.version -ne $env:SKIA_VERSION) { throw 'Skia binding version does not match' }
           $registry = Split-Path -Parent $bindings.manifest_path
+          git -C $registry apply --ignore-space-change --ignore-whitespace "$env:GITHUB_WORKSPACE\skia-bindings-gnullvm.patch"
+          if ($LASTEXITCODE -ne 0) { throw 'skia-bindings GNU LLVM patch failed' }
           $revision = $bindings.metadata.skia
           if (-not $revision) { throw 'Skia source revision is missing from crate metadata' }
           $archive = Join-Path $build 'skia.tar.gz'
