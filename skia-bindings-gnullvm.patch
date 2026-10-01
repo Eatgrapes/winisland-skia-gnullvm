@@ -1,6 +1,7 @@
 --- a/build_support/platform/windows.rs
 +++ b/build_support/platform/windows.rs
-@@ -78,5 +78,8 @@ impl PlatformDetails for Generic {
+@@ -81,8 +81,11 @@
+         false
      }
  
 -    fn gn_args(&self, _config: &BuildConfiguration, builder: &mut GnArgsBuilder) {
@@ -10,3 +11,16 @@
 +            builder.target(Some("x86_64-w64-windows-gnu".to_string()));
 +        }
      }
+ 
+     fn link_libraries(&self, features: &Features) -> Vec<String> {
+@@ -204,6 +207,10 @@
+ }
+ 
+ fn specific_target(target: &Target) -> Option<&'static str> {
++    if target.abi.as_deref() == Some("gnullvm") && target.architecture == "x86_64" {
++        return Some("x86_64-w64-windows-gnu");
++    }
++
+     if target.vendor == "win7" {
+         if target.architecture == "x86_64" {
+             return Some("x86_64-pc-windows-msvc");

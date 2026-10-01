@@ -137,6 +137,16 @@ jobs:
           python scripts/package.py --native $bindingOutput --binding-output $bindingOutput --source $env:SKIA_SOURCE --llvm-mingw $env:LLVM_MINGW_ROOT --registry $env:SKIA_BINDINGS_SOURCE --output dist
           if ($LASTEXITCODE -ne 0) { throw 'Skia packaging failed' }
 
+      - name: Upload Skia binaries
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: skia-${{ inputs.skia_version }}-x86_64-pc-windows-gnullvm-d3d
+          path: |
+            dist/${{ inputs.skia_version }}/*.tar.gz
+            dist/${{ inputs.skia_version }}/*.sha256
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Verify WinIsland linking with the packaged cache
         shell: pwsh
         run: |
@@ -150,12 +160,3 @@ jobs:
           cargo build --manifest-path .build/WinIsland/Cargo.toml -j 4
           if ($LASTEXITCODE -ne 0) { throw 'WinIsland GNU LLVM linking failed' }
 
-      - name: Upload Skia binaries
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: skia-${{ inputs.skia_version }}-x86_64-pc-windows-gnullvm-d3d
-          path: |
-            dist/${{ inputs.skia_version }}/*.tar.gz
-            dist/${{ inputs.skia_version }}/*.sha256
-          if-no-files-found: error
-          retention-days: 30
