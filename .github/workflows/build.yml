@@ -1,0 +1,159 @@
+name: Build Skia GNU LLVM binaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      skia_version:
+        description: skia-safe crate version
+        required: true
+        default: "0.99.0"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 90
+    env:
+      SKIA_VERSION: ${{ inputs.skia_version }}
+      TARGET: x86_64-pc-windows-gnullvm
+      CARGO_BUILD_TARGET: x86_64-pc-windows-gnullvm
+      CARGO_BUILD_JOBS: "4"
+      GIT_SYNC_DEPS_SKIP_EMSDK: "1"
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install GNU LLVM tools
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:SKIA_VERSION -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid Skia version' }
+          rustup toolchain install 1.98.1-x86_64-pc-windows-gnullvm --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw 'Rust installation failed' }
+          rustup default 1.98.1-x86_64-pc-windows-gnullvm
+          $archive = Join-Path $env:RUNNER_TEMP 'llvm-mingw.zip'
+          curl.exe -fL --retry 3 'https://github.com/mstorsjo/llvm-mingw/releases/download/20260922/llvm-mingw-20260922-ucrt-x86_64.zip' -o $archive
+          if ($LASTEXITCODE -ne 0) { throw 'LLVM MinGW download failed' }
+          $destination = Join-Path $env:RUNNER_TEMP 'llvm-mingw'
+          Expand-Archive -LiteralPath $archive -DestinationPath $destination
+          $root = Join-Path $destination 'llvm-mingw-20260922-ucrt-x86_64'
+          if (-not (Test-Path -LiteralPath "$root\bin\clang.exe")) { throw 'LLVM MinGW was not extracted' }
+          "$root\bin" >> $env:GITHUB_PATH
+          "LLVM_MINGW_ROOT=$root" >> $env:GITHUB_ENV
+          "CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_LINKER=$root\bin\x86_64-w64-mingw32-clang.exe" >> $env:GITHUB_ENV
+          $libclang = Join-Path $env:RUNNER_TEMP 'libclang'
+          python scripts/install-libclang.py $libclang
+          if ($LASTEXITCODE -ne 0) { throw 'libclang extraction failed' }
+          "LIBCLANG_PATH=$libclang" >> $env:GITHUB_ENV
+
+      - name: Prepare matching Skia source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $build = Join-Path $env:GITHUB_WORKSPACE '.build'
+          $builder = Join-Path $build 'builder'
+          New-Item -ItemType Directory -Path "$builder\src" -Force | Out-Null
+          'fn main() {}' | Set-Content -LiteralPath "$builder\src\main.rs" -Encoding utf8NoBOM
+          @"
+          [package]
+          name = "skia-gnullvm-builder"
+          version = "0.1.0"
+          edition = "2021"
+          publish = false
+
+          [workspace]
+
+          [dependencies]
+          skia-safe = { version = "=$env:SKIA_VERSION", features = ["d3d"] }
+          "@ | Set-Content -LiteralPath "$builder\Cargo.toml" -Encoding utf8NoBOM
+          $metadata = cargo metadata --manifest-path "$builder\Cargo.toml" --format-version 1 | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Cargo dependency resolution failed' }
+          $bindings = $metadata.packages | Where-Object { $_.name -eq 'skia-bindings' }
+          if ($bindings.version -ne $env:SKIA_VERSION) { throw 'Skia binding version does not match' }
+          $registry = Split-Path -Parent $bindings.manifest_path
+          $revision = $bindings.metadata.skia
+          if (-not $revision) { throw 'Skia source revision is missing from crate metadata' }
+          $archive = Join-Path $build 'skia.tar.gz'
+          curl.exe -fL --retry 3 "https://codeload.github.com/rust-skia/skia/tar.gz/$revision" -o $archive
+          if ($LASTEXITCODE -ne 0) { throw 'Skia source download failed' }
+          tar.exe -xzf $archive -C $build
+          if ($LASTEXITCODE -ne 0) { throw 'Skia source extraction failed' }
+          $source = Join-Path $build "skia-$revision"
+          if (-not (Test-Path -LiteralPath "$source\DEPS")) { throw 'Matching Skia source was not extracted' }
+          git apply --check --ignore-space-change --ignore-whitespace --directory=".build/skia-$revision" skia-mingw.patch
+          if ($LASTEXITCODE -ne 0) { throw 'This Skia revision needs an updated MinGW patch' }
+          git apply --ignore-space-change --ignore-whitespace --directory=".build/skia-$revision" skia-mingw.patch
+          if ($LASTEXITCODE -ne 0) { throw 'Skia MinGW patch failed' }
+          Push-Location $source
+          try {
+            python tools/git-sync-deps
+            if ($LASTEXITCODE -ne 0) { throw 'Skia dependency synchronization failed' }
+            python bin/fetch-gn
+            if ($LASTEXITCODE -ne 0) { throw 'GN download failed' }
+          } finally {
+            Pop-Location
+          }
+          "BUILDER=$builder" >> $env:GITHUB_ENV
+          "SKIA_SOURCE=$source" >> $env:GITHUB_ENV
+          "SKIA_BINDINGS_SOURCE=$registry" >> $env:GITHUB_ENV
+
+      - name: Build GNU LLVM Skia and bindings
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = $env:LLVM_MINGW_ROOT.Replace('\', '/')
+          $env:CC = "$root/bin/x86_64-w64-mingw32-clang.exe"
+          $env:CXX = "$root/bin/x86_64-w64-mingw32-clang++.exe"
+          $env:AR = "$root/bin/llvm-ar.exe"
+          $env:CC_x86_64_pc_windows_gnullvm = $env:CC
+          $env:CXX_x86_64_pc_windows_gnullvm = $env:CXX
+          $env:AR_x86_64_pc_windows_gnullvm = $env:AR
+          $env:CXXFLAGS_x86_64_pc_windows_gnullvm = '-fms-extensions -fno-exceptions -O2 -g0'
+          $env:SKIA_SOURCE_DIR = $env:SKIA_SOURCE
+          $env:SKIA_GN_COMMAND = "$env:SKIA_SOURCE/bin/gn.exe"
+          $env:SKIA_GN_ARGS = "is_mingw=true ar=`"$root/bin/llvm-ar.exe`" extra_cflags=[`"--target=$env:TARGET`",`"-fms-extensions`"]"
+          $env:BINDGEN_EXTRA_CLANG_ARGS = "-fms-extensions -I$root/include/c++/v1 -I$root/lib/clang/23/include -I$root/include"
+          cargo check --manifest-path "$env:BUILDER/Cargo.toml" -j 4
+          if ($LASTEXITCODE -ne 0) { throw 'GNU LLVM Skia binding build failed' }
+
+      - name: Package versioned binaries
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $target = Join-Path $env:BUILDER "target\$env:TARGET\debug\build"
+          $bindingOutput = Get-ChildItem -LiteralPath $target -Directory -Filter 'skia-bindings-*' |
+            ForEach-Object { Join-Path $_.FullName 'out\skia' } |
+            Where-Object { Test-Path -LiteralPath "$_\bindings.rs" } |
+            Select-Object -First 1
+          if (-not $bindingOutput) { throw 'Generated Skia bindings were not found' }
+          python scripts/package.py --native $bindingOutput --binding-output $bindingOutput --source $env:SKIA_SOURCE --llvm-mingw $env:LLVM_MINGW_ROOT --registry $env:SKIA_BINDINGS_SOURCE --output dist
+          if ($LASTEXITCODE -ne 0) { throw 'Skia packaging failed' }
+
+      - name: Verify WinIsland linking with the packaged cache
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git clone --filter=blob:none --no-checkout https://github.com/WinIslandProject/WinIsland.git .build/WinIsland
+          if ($LASTEXITCODE -ne 0) { throw 'WinIsland checkout failed' }
+          git -C .build/WinIsland checkout f7c3d6e5f1b949b84a3d3d1bbfeb3270bc738ad4
+          if ($LASTEXITCODE -ne 0) { throw 'WinIsland revision checkout failed' }
+          $cache = (Join-Path $env:GITHUB_WORKSPACE 'dist').Replace('\', '/')
+          $env:SKIA_BINARIES_URL = "file://$cache/{tag}/skia-binaries-{key}.tar.gz"
+          cargo build --manifest-path .build/WinIsland/Cargo.toml -j 4
+          if ($LASTEXITCODE -ne 0) { throw 'WinIsland GNU LLVM linking failed' }
+
+      - name: Upload Skia binaries
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: skia-${{ inputs.skia_version }}-x86_64-pc-windows-gnullvm-d3d
+          path: |
+            dist/${{ inputs.skia_version }}/*.tar.gz
+            dist/${{ inputs.skia_version }}/*.sha256
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,512 @@
+--- a/gn/BUILDCONFIG.gn
++++ b/gn/BUILDCONFIG.gn
+@@ -17,6 +17,8 @@
+   ndk_api = 21
+ 
+   sanitize = ""
++
++  is_mingw = false
+ 
+   ar = "ar"
+   cc = "cc"
+@@ -70,6 +72,7 @@
+ is_mac = current_os == "mac"
+ is_wasm = current_os == "wasm"
+ is_win = current_os == "win"
++is_msvc = is_win && !is_mingw
+ 
+ # Dawn has references to fuchsia, but Skia's GN rules do not
+ is_fuchsia = false
+@@ -95,7 +98,7 @@
+ }
+ 
+ is_clang = is_android || is_ios || is_mac || is_wasm ||
+-           (cc == "clang" && cxx == "clang++") || clang_win != ""
++           (cc == "clang" && cxx == "clang++") || clang_win != "" || is_mingw
+ if (!is_clang && !is_win) {
+   is_clang = exec_script("//gn/is_clang.py",
+                          [
+@@ -128,7 +131,7 @@
+   }
+ }
+ 
+-if (target_os == "win") {
++if (is_msvc) {
+   # By default we look for 2017 (Enterprise, Pro, and Community), then 2015. If MSVC is installed in a
+   # non-default location, you can set win_vc to inform us where it is.
+ 
+@@ -139,7 +142,7 @@
+                         # directory.
+ }
+ 
+-if (target_os == "win") {
++if (is_msvc) {
+   if (win_toolchain_version == "") {
+     win_toolchain_version = exec_script("//gn/highest_version_dir.py",
+                                         [
+@@ -236,7 +239,7 @@
+       [ "//gn/skia:warnings_for_public_headers" ]
+ }
+ 
+-if (is_win) {
++if (is_msvc) {
+   # Windows tool chain
+   set_default_toolchain("//gn/toolchain:msvc")
+   default_toolchain_name = "msvc"
+--- a/gn/skia/BUILD.gn
++++ b/gn/skia/BUILD.gn
+@@ -56,10 +56,14 @@
+   ldflags = []
+   libs = []
+ 
++  if (is_mingw) {
++    defines += [ "_CRT_SECURE_NO_WARNINGS", "WIN32_LEAN_AND_MEAN", "NOMINMAX" ]
++  }
++
+   # Disable warnings about unknown attributes.
+   # (These unknown attribute warnings are on by default, so we don't make
+   # disabling them part of :warnings, as some targets remove :warnings.)
+-  if (is_win && !is_clang) {
++  if (is_msvc && !is_clang) {
+     cflags += [
+       "/wd5030",
+       "/wd5051",
+@@ -68,13 +72,13 @@
+     cflags += [ "-Wno-attributes" ]
+   }
+ 
+-  if (is_clang && !is_win) {
++  if (is_clang && !is_msvc) {
+     # In Clang 14, this default was changed. We turn this off to (hopefully) make our
+     # GMs more consistent in the transition.
+     cflags += [ "-ffp-contract=off" ]
+   }
+ 
+-  if (is_win) {
++  if (is_msvc) {
+     if (is_clang && current_cpu == "arm64") {
+       cflags += [ "--target=arm64-windows" ]
+     }
+@@ -138,7 +142,7 @@
+       "-mfpu=neon",
+       "-mthumb",
+     ]
+-  } else if (current_cpu == "x86" && !is_win) {
++  } else if (current_cpu == "x86" && !is_msvc) {
+     asmflags += [ "-m32" ]
+     cflags += [
+       "-m32",
+@@ -153,7 +157,7 @@
+     ]
+   }
+ 
+-  if (malloc != "" && !is_win) {
++  if (malloc != "" && !is_msvc) {
+     cflags += [
+       "-fno-builtin-malloc",
+       "-fno-builtin-calloc",
+@@ -170,7 +174,7 @@
+ 
+   if (show_includes) {
+     assert(is_clang, "show_includes requires clang to build.")
+-    if (is_win) {
++    if (is_msvc) {
+       cflags += [
+         "/clang:-H",
+         "/clang:-fshow-skipped-includes",
+@@ -320,7 +324,7 @@
+     sanitize = ""
+   }
+ 
+-  if (is_win && !is_clang && sanitize == "ASAN") {
++  if (is_msvc && !is_clang && sanitize == "ASAN") {
+     sanitizers = "address"
+     cflags += [ "/fsanitize=$sanitizers" ]
+   } else if (sanitize != "" && sanitize != "MSVC") {
+@@ -356,7 +360,7 @@
+       cflags += [ "-fno-sanitize=function" ]
+     }
+ 
+-    if (is_win) {
++    if (is_msvc) {
+       cflags += [
+         # On Release builds, we get strange warnings about string literals.
+         "/GF-",
+@@ -383,7 +387,7 @@
+       ldflags += [ "-fsanitize=$sanitizers" ]
+     }
+ 
+-    if (is_win && sanitize == "ASAN") {
++    if (is_msvc && sanitize == "ASAN") {
+       copy("copy_asan_runtime") {
+         sources = [ "$clang_win/lib/clang/$clang_win_version/lib/windows/clang_rt.asan_dynamic-x86_64.dll" ]
+         outputs = [ "$root_out_dir/clang_rt.asan_dynamic-x86_64.dll" ]
+@@ -408,14 +412,14 @@
+ 
+ # See skbug.com/40041063.
+ config("recover_pointer_overflow") {
+-  if (sanitize == "ASAN" && !(is_win && !is_clang)) {
++  if (sanitize == "ASAN" && !(is_msvc && !is_clang)) {
+     cflags = [ "-fsanitize-recover=pointer-overflow" ]
+   }
+ }
+ 
+ config("no_exceptions") {
+   # Exceptions are disabled by default on Windows.  (Use /EHsc to enable them.)
+-  if (!is_win) {
++  if (!is_msvc) {
+     cflags_cc = [ "-fno-exceptions" ]
+     cflags_objcc = cflags_cc
+   }
+@@ -428,14 +432,14 @@
+   cflags_objcc = []
+ 
+   if (werror) {
+-    if (is_win) {
++    if (is_msvc) {
+       cflags += [ "/WX" ]
+     } else {
+       cflags += [ "-Werror" ]
+     }
+   }
+ 
+-  if (is_win) {
++  if (is_msvc) {
+     cflags += [
+       "/W3",  # Turn on lots of warnings.
+ 
+@@ -508,7 +512,7 @@
+     #   - clang-cl doesn't recognize the flag
+     #   - The (old) Mac/iOS SDK used on the bots breaks this rule in various headers
+     #     TODO: Re-enable on Apple when we update XCode
+-    if (!is_win && !is_apple && current_cpu != "loong64") {
++    if (!is_msvc && !is_apple && current_cpu != "loong64") {
+       cflags += [ "-fno-lax-vector-conversions" ]
+     }
+ 
+@@ -645,7 +649,7 @@
+   }
+ 
+   # !is_clang is a proxy for gcc.
+-  if (!is_clang && !is_win) {
++  if (!is_clang && !is_msvc) {
+     cflags += [
+       "-Wno-unreachable-code",  # Causes false positives in old GCC; removed
+                                 # from modern GCC entirely
+@@ -689,7 +693,7 @@
+       "-gline-tables-only",
+       "-funwind-tables",  # Helps make in-process backtraces fuller.
+     ]
+-  } else if (is_win) {
++  } else if (is_msvc) {
+     cflags = [ "/Z7" ]
+     if (is_clang) {
+       cflags += [ "-gcodeview-ghash" ]
+@@ -709,7 +713,7 @@
+   # -fsanitize=vptr requires RTTI which is enabled as a part of
+   # -fsanitize=undefined
+   if (sanitize != "ASAN") {
+-    if (is_win) {
++    if (is_msvc) {
+       cflags_cc = [ "/GR-" ]
+     } else {
+       cflags_cc = [ "-fno-rtti" ]
+@@ -720,7 +724,7 @@
+ 
+ config("optimize") {
+   ldflags = []
+-  if (is_win) {
++  if (is_msvc) {
+     cflags = [
+       "/O2",
+       "/Zc:inline",
+@@ -775,12 +779,12 @@
+ #
+ # As of 2024, only GCC is aggressive about strict aliasing. Clang isn't.
+ config("strict_aliasing") {
+-  if (!is_win) {
++  if (!is_msvc) {
+     cflags = [ "-fstrict-aliasing" ]
+   }
+ }
+ config("no_strict_aliasing") {
+-  if (!is_win) {
++  if (!is_msvc) {
+     cflags = [ "-fno-strict-aliasing" ]
+   }
+ }
+@@ -798,7 +802,7 @@
+       "-rdynamic",
+       "-Wl,-rpath,\$ORIGIN",
+     ]
+-  } else if (is_win) {
++  } else if (is_msvc) {
+     ldflags = [
+       "/SUBSYSTEM:CONSOLE",  # Quiet "no subsystem specified; CONSOLE assumed".
+       "/INCREMENTAL:NO",  # Quiet warnings about failing to incrementally link
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -171,7 +171,7 @@
+ opts("ml3") {
+   enabled = is_x86
+   sources = skia_opts.ml3_sources
+-  if (is_win) {
++  if (is_msvc) {
+     cflags = [ "/arch:AVX2" ]
+   } else if (current_cpu == "x86") {
+     cflags = [ "-march=haswell" ]
+@@ -183,7 +183,7 @@
+ opts("ml4") {
+   enabled = is_x86
+   sources = skia_opts.ml4_sources
+-  if (is_win) {
++  if (is_msvc) {
+     cflags = [ "/arch:AVX512" ]
+   } else if (current_cpu == "x86") {
+     cflags = [ "-march=skylake-avx512" ]
+@@ -482,7 +482,7 @@
+   sources = skia_ports_windows_fonts_sources
+   if (skia_dwritecore_sdk != "") {
+     defines = [ "DWRITE_CORE" ]
+-    if (is_win && is_clang) {
++    if (is_msvc && is_clang) {
+       # Clang complains about these headers, so mark them as system. These
+       # headers are hiding SDK headers of the same name, which are also
+       # included as system headers, so these need to go first in the cflags
+@@ -503,7 +503,7 @@
+   public_defines = [ "SK_FONTMGR_GDI_AVAILABLE" ]
+   public = skia_ports_windows_fonts_public
+   sources = skia_ports_fonthost_win_sources
+-  libs = [ "Gdi32.lib" ]
++  libs = [ "gdi32" ]
+ }
+ 
+ if (skia_lex) {
+@@ -1008,7 +1008,7 @@
+         "src/gpu/ganesh/gl/win/GrGLMakeWinInterface.cpp",
+       ]
+       if (target_cpu != "arm64") {
+-        libs += [ "OpenGL32.lib" ]
++        libs += [ "opengl32" ]
+       }
+     } else {
+       sources += [ "src/gpu/ganesh/gl/GrGLMakeNativeInterface_none.cpp" ]
+@@ -1035,9 +1035,9 @@
+       public_defines += [ "SK_ENABLE_D3D_DEBUG_LAYER" ]
+     }
+     libs += [
+-      "d3d12.lib",
+-      "dxgi.lib",
+-      "d3dcompiler.lib",
++      "d3d12",
++      "dxgi",
++      "d3dcompiler",
+     ]
+   }
+ 
+@@ -2000,15 +2000,15 @@
+                  "src/ports/SkLog_win.cpp",
+                ]
+     libs += [
+-      "Ole32.lib",
+-      "OleAut32.lib",
++      "ole32",
++      "oleaut32",
+     ]
+ 
+     if (!skia_enable_winuwp) {
+       libs += [
+-        "FontSub.lib",
+-        "User32.lib",
+-        "Usp10.lib",
++        "fontsub",
++        "user32",
++        "usp10",
+       ]
+     }
+   } else {
+@@ -2391,9 +2391,9 @@
+             "tools/ganesh/gl/win/SkWGL.h",
+             "tools/ganesh/gl/win/SkWGL_win.cpp",
+           ]
+-          libs += [ "Gdi32.lib" ]
++          libs += [ "gdi32" ]
+           if (target_cpu != "arm64") {
+-            libs += [ "OpenGL32.lib" ]
++            libs += [ "opengl32" ]
+           }
+         } else if (is_wasm) {
+           # TODO: replace with webgl test context
+@@ -2659,7 +2659,7 @@
+       sources += [ "tools/AutoreleasePool.mm" ]
+       frameworks += [ "Foundation.framework" ]
+     } else if (is_win && !skia_enable_winuwp) {
+-      libs += [ "DbgHelp.lib" ]
++      libs += [ "dbghelp" ]
+     }
+ 
+     defines = []
+--- a/modules/skcms/BUILD.gn
++++ b/modules/skcms/BUILD.gn
+@@ -33,7 +33,7 @@
+ arch("skcms_TransformHsw") {
+   enabled = current_cpu == "x64" && target_os != "android"
+   sources = skcms_TransformHsw
+-  if (is_win) {
++  if (is_msvc) {
+     if (is_clang) {
+       cflags = [
+         "/clang:-mavx2",
+@@ -55,7 +55,7 @@
+ arch("skcms_TransformSkx") {
+   enabled = current_cpu == "x64" && target_os != "android"
+   sources = skcms_TransformSkx
+-  if (is_win) {
++  if (is_msvc) {
+     if (is_clang) {
+       cflags = [
+         "/clang:-mavx512f",
+@@ -82,8 +82,8 @@
+ 
+ static_library("skcms") {
+   cflags = []
+-  if (!is_win || is_clang) {
+-    cflags += [ "-std=c11" ]
++  if (!is_msvc || is_clang) {
++    cflags_c = [ "-std=c11" ]
+   }
+   if (target_cpu != "x64" || target_os == "android") {
+     defines = [
+--- a/third_party/third_party.gni
++++ b/third_party/third_party.gni
+@@ -13,7 +13,7 @@
+     if (enabled) {
+       forward_variables_from(invoker, "*", [ "include_dirs" ])
+       cflags = []
+-      if (is_win) {
++      if (is_msvc) {
+         include_dirs = invoker.include_dirs
+         if (is_clang) {
+           foreach(dir, invoker.include_dirs) {
+@@ -92,7 +92,7 @@
+       if (!defined(cflags)) {
+         cflags = []
+       }
+-      if (is_win) {
++      if (is_msvc) {
+         cflags += [ "/w" ]
+       } else {
+         cflags += [ "-w" ]
+--- a/include/private/base/SkAttributes.h
++++ b/include/private/base/SkAttributes.h
+@@ -24,7 +24,7 @@
+  *     SK_ALWAYS_INLINE void someMethod() { ... }   // should always be inlined
+  */
+ #if !defined(SK_ALWAYS_INLINE)
+-#  if defined(SK_BUILD_FOR_WIN)
++#  if defined(_MSC_VER)
+ #    define SK_ALWAYS_INLINE __forceinline
+ #  else
+ #    define SK_ALWAYS_INLINE SK_ATTRIBUTE(always_inline) inline
+@@ -36,7 +36,7 @@
+  * you can use SK_NEVER_INLINE to prevent inlining.
+  */
+ #if !defined(SK_NEVER_INLINE)
+-#  if defined(SK_BUILD_FOR_WIN)
++#  if defined(_MSC_VER)
+ #    define SK_NEVER_INLINE __declspec(noinline)
+ #  else
+ #    define SK_NEVER_INLINE SK_ATTRIBUTE(noinline)
+--- a/src/ports/SkScalerContext_win_dw.cpp
++++ b/src/ports/SkScalerContext_win_dw.cpp
+@@ -623,11 +623,11 @@
+     auto drawChildren = [&](uint32_t childCount) -> bool {
+         if (childCount != 0) {
+             DWRITE_PAINT_ELEMENT childElement;
+-            HRB(reader.MoveToFirstChild(&childElement));
++            HRB(reader.MoveToFirstChild(&childElement, sizeof(DWRITE_PAINT_ELEMENT)));
+             this->drawColorV1Paint(canvas, reader, childElement);
+ 
+             for (uint32_t i = 1; i < childCount; i++) {
+-                HRB(reader.MoveToNextSibling(&childElement));
++                HRB(reader.MoveToNextSibling(&childElement, sizeof(DWRITE_PAINT_ELEMENT)));
+                 this->drawColorV1Paint(canvas, reader, childElement);
+             }
+ 
+@@ -1190,13 +1190,13 @@
+         DWRITE_PAINT_ELEMENT sourceElement;
+         DWRITE_PAINT_ELEMENT backdropElement;
+ 
+-        HRBM(reader.MoveToFirstChild(&sourceElement), "Could not move to child.");
+-        HRBM(reader.MoveToNextSibling(&backdropElement), "Could not move to sibiling.");
++        HRBM(reader.MoveToFirstChild(&sourceElement, sizeof(DWRITE_PAINT_ELEMENT)), "Could not move to child.");
++        HRBM(reader.MoveToNextSibling(&backdropElement, sizeof(DWRITE_PAINT_ELEMENT)), "Could not move to sibiling.");
+         canvas.saveLayer(nullptr, nullptr);
+         this->drawColorV1Paint(canvas, reader, backdropElement);
+ 
+         HRBM(reader.MoveToParent(), "Could not move to parent.");
+-        HRBM(reader.MoveToFirstChild(&sourceElement), "Could not move to child.");
++        HRBM(reader.MoveToFirstChild(&sourceElement, sizeof(DWRITE_PAINT_ELEMENT)), "Could not move to child.");
+         canvas.saveLayer(nullptr, &blendModePaint);
+         this->drawColorV1Paint(canvas, reader, sourceElement);
+ 
+@@ -1227,7 +1227,7 @@
+     DWRITE_PAINT_ELEMENT paintElement;
+     D2D_RECT_F clipBox;
+     DWRITE_PAINT_ATTRIBUTES attributes;
+-    HRBM(paintReader->SetCurrentGlyph(glyphIndex, &paintElement, &clipBox, &attributes),
++    HRBM(paintReader->SetCurrentGlyph(glyphIndex, &paintElement, sizeof(DWRITE_PAINT_ELEMENT), &clipBox, &attributes),
+          "Could not set current glyph.");
+ 
+     if (paintElement.paintType == DWRITE_PAINT_TYPE_NONE) {
+@@ -1256,7 +1256,8 @@
+ 
+     // The DirectWrite interface returns resolved colors if these are provided.
+     // Indexes and alphas are reported but there is no reason to duplicate the color calculation.
+-    paintReader->SetTextColor(dw_color_from(SkColor4f::FromColor(fRec.fForegroundColor)));
++    auto dwColor = dw_color_from(SkColor4f::FromColor(fRec.fForegroundColor));
++    paintReader->SetTextColor(&dwColor);
+     paintReader->SetCustomColorPalette(typeface->fDWPalette.get(), typeface->fPaletteEntryCount);
+ 
+     return this->drawColorV1Paint(canvas, *paintReader, paintElement);
+@@ -1293,11 +1294,11 @@
+             return true;
+         }
+         DWRITE_PAINT_ELEMENT childElement;
+-        HRB(reader.MoveToFirstChild(&childElement));
++        HRB(reader.MoveToFirstChild(&childElement, sizeof(DWRITE_PAINT_ELEMENT)));
+         this->generateColorV1PaintBounds(ctm, bounds, reader, childElement);
+ 
+         for (uint32_t i = 1; i < childCount; ++i) {
+-            HRB(reader.MoveToNextSibling(&childElement));
++            HRB(reader.MoveToNextSibling(&childElement, sizeof(DWRITE_PAINT_ELEMENT)));
+             this->generateColorV1PaintBounds(ctm, bounds, reader, childElement);
+         }
+ 
+@@ -1443,7 +1444,7 @@
+     D2D_RECT_F clipBox;
+     DWRITE_PAINT_ATTRIBUTES attributes;
+     // If the glyph is not color this will succeed but return paintType NONE.
+-    HRBM(paintReader->SetCurrentGlyph(glyphIndex, &paintElement, &clipBox, &attributes),
++    HRBM(paintReader->SetCurrentGlyph(glyphIndex, &paintElement, sizeof(DWRITE_PAINT_ELEMENT), &clipBox, &attributes),
+          "Could not set the current glyph.");
+ 
+     if (paintElement.paintType == DWRITE_PAINT_TYPE_NONE) {
+@@ -1731,7 +1732,7 @@
+     }
+ 
+     DWRITE_GLYPH_IMAGE_FORMATS imageFormats;
+-    HRBM(fontFace4->GetGlyphImageFormats(glyph.getGlyphID(), 0, UINT32_MAX, &imageFormats),
++    HRBM(fontFace4->GetGlyphImageFormats_(glyph.getGlyphID(), 0, UINT32_MAX, &imageFormats),
+          "Cannot get glyph image formats.");
+     if (!(imageFormats & DWRITE_GLYPH_IMAGE_FORMATS_PNG)) {
+         return false;
+@@ -2280,7 +2281,7 @@
+     }
+ 
+     DWRITE_GLYPH_IMAGE_FORMATS imageFormats;
+-    HRBM(fontFace4->GetGlyphImageFormats(glyph.getGlyphID(), 0, UINT32_MAX, &imageFormats),
++    HRBM(fontFace4->GetGlyphImageFormats_(glyph.getGlyphID(), 0, UINT32_MAX, &imageFormats),
+          "Cannot get glyph image formats.");
+     if (!(imageFormats & DWRITE_GLYPH_IMAGE_FORMATS_SVG)) {
+         return false;
